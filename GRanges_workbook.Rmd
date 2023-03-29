@@ -1,0 +1,59 @@
+---
+title: "Power Ranges : GenomicRanges workbook"
+output: html_notebook
+---
+
+
+```{r setup}
+library(R.utils)
+library(SummarizedExperiment)
+library(Rsamtools)
+library(qs)
+library(data.table)
+##devtools::install_github("dzhang32/ggtranscript")
+##library(ggtranscript)
+```
+
+
+```{r fetch example files}
+options(timeout = 300)
+dlurls=list('hg38.fa.bgz' = 'EfWx9pg_ijlOqGUZZBI1FXQBpOOBuvhE-KvoZLWXQdOYSw?e=tVY4tL',
+            'hg38.fa.bgz.fai' = 'EUQr4eDAJVtGv-UY2p9wOnsBcU3_Cmdk-ysIVgXyqrOxTw?e=FKEGJY',
+            'hg38.fa.bgz.gzi' = 'EVWjuVzLc2hFg8ZPLO6RzscBBeqllusCA7BssBer1qvB9g?e=Zex951',
+            'gencode43.nri.main.gtf.gz' = 'EcrHEjtDsI5IrxLQ74HharIBroPzsEOWqMzW_2CMMgk9yQ?e=XtQ82j'
+)
+          
+jhl='https://livejohnshopkins-my.sharepoint.com/:u:/g/personal/gpertea1_jh_edu/'
+dl='&download=1'
+datadir='data/'
+if (!dir.exists(datadir)) dir.create(datadir)
+for (file in names(dlurls)) {
+  dlto=paste0(datadir,file)
+  if (!file.exists(dlto)) {
+   message("downloading: ",dlto)
+   download.file(paste0(jhl,dlurls[[file]],dl), destfile=dlto, mode = 'wb')
+  } else {
+    message(" file ", dlto, " already exists." )
+  }
+}
+anngz=paste0(datadir, names(dlurls)[length(dlurls)])
+
+if (file.exists(anngz)) {
+  message("unpacking ",anngz)
+  gunzip(anngz, remove=T)
+}
+anngtf=sub('\\.gz$','',anngz)
+stopifnot(file.exists(anngtf))
+```
+```{r}
+annqs=sub('\\.gz$','.qs',anngz)
+if (file.exists(annqs)) {
+  anndata <- qread(annqs)          ##  ~ 3 seconds
+  #load(sub('qs$','Rdata', annqs)) ## ~ 9 seconds
+} else {
+  anndata <- rtracklayer::import(anngz) ## ~20 seconds
+  qsave(anndata, file=annqs)            ## ~ 4 seconds
+  # save(anndata, file=sub('qs$','Rdata', annqs)) ## ~ 12 seconds
+}
+```
+
