@@ -36,16 +36,24 @@ for (file in names(dlurls)) {
     message(" file ", dlto, " already exists." )
   }
 }
-anngz=paste0(datadir, names(dlurls)[length(dlurls)])
-
-if (file.exists(anngz)) {
-  message("unpacking ",anngz)
-  gunzip(anngz, remove=T)
+rseurls = list('rse_jx_bsp2.rda'='https://s3.us-east-2.amazonaws.com/libd-brainseq2/rse_jxn_unfiltered.Rdata',
+               'rse_gene_bsp2.rda'='https://s3.us-east-2.amazonaws.com/libd-brainseq2/rse_gene_unfiltered.Rdata')
+for (file in names(rseurls)) {
+ dlto=paste0(datadir,file)
+ if (!file.exists(dlto)) {
+   message("downloading: ",dlto)
+   download.file(rseurls[[file]], destfile=dlto, mode = 'wb')
+  } else {
+    message(" file ", dlto, " already exists." )
+  }
 }
-anngtf=sub('\\.gz$','',anngz)
-stopifnot(file.exists(anngtf))
+
+
+## last file has the annotation.gz 
+anngz=paste0(datadir, names(dlurls)[length(dlurls)])
 ```
-```{r}
+
+```{r load/import}
 annqs=sub('\\.gz$','.qs',anngz)
 if (file.exists(annqs)) {
   anndata <- qread(annqs)          ##  ~ 3 seconds
@@ -55,5 +63,15 @@ if (file.exists(annqs)) {
   qsave(anndata, file=annqs)            ## ~ 4 seconds
   # save(anndata, file=sub('qs$','Rdata', annqs)) ## ~ 12 seconds
 }
+# file.edit('~/.Rprofile') ## defined oi, os, hh, etc.
+# oi(anndata)
+```
+
+```{r get exonic length for transcripts, genes, number of exons}
+
+```
+
+```{r}
+
 ```
 
