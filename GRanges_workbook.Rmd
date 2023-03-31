@@ -64,7 +64,6 @@ annexgr <- anndata[anndata$type=='exon'] ## exon GRanges only
 txgrl <- split(annexgr, annexgr$transcript_id)
 stopifnot(identical(length(txgrl), length(anntxgr))) # sanity check
 
-
 ## GRangesList::width returns an IntegerList with names as transcript_id
 ## summing up exon length per all transcripts:
 txlens <- sum(width(txgrl)) # named list of exonic lengths for each transcript!
@@ -98,8 +97,8 @@ if (file.exists(annjxqs)) {
   jgenes <- mcols(metxgr[annJxData$transcript_id])[, c('gene_id', 'gene_name')]
   ## add gene IDs, collapse identical junctions but keep lists of transcripts, genes sharing them
   annJxData <- annJxData[, `:=`(gene_id=jgenes$gene_id, gene_name=jgenes$gene_name)][,
-                   .( txlist=list(sort(unique(c(transcript_id)))), glist=list(sort(unique(c(gene_id)))),
-                      gsyms=list(sort(unique(c(gene_name)))) ), by=.(seqnames, start, end, strand)][,
+               .( txlist=list(sort(unique(c(transcript_id)))), glist=list(sort(unique(c(gene_id)))),
+              gsyms=list(sort(unique(c(gene_name)))) ), by=.(seqnames, start, end, strand)][,
                                 `:=`(gcount=lengths(glist), txcount=lengths(txlist)) ]
   annJxData <- makeGRangesFromDataFrame(annJxData, keep.extra.columns = T)
   names(annJxData) <-  paste(seqnames(annJxData), ranges(annJxData), strand(annJxData), sep=':')
@@ -136,7 +135,7 @@ jxgr
 
 ```{r annotate junctions}
 ## annotate junctions vs loaded reference annotation annJxData
-
+## check these junction against the known intron database we built earlier
 inGencode <- countOverlaps(jxgr, annJxData, type = "equal") > 0
 jxgr$inGencode <- inGencode
 message(length(inGencode[inGencode]), " junctions found matching annotation.")
@@ -155,6 +154,7 @@ pwalk(list(c('geneids', 'symbols', 'txlist'),
            c('gencodeGeneID','Symbol','gencodeTx')),
       function(a, b, c) {
         dt <- data.table(l=vector('list', length(jxgr)), s=as.character(NA))
+        ## flatten the list columns into comma-delimited strings
         dt[queryHits(oo), l:=mcols(annJxData[subjectHits(oo)])[, b] ]
         dt[lengths(l)>1,  s:=sapply(l, paste, collapse=',')]
         dt[lengths(l)==1, s:=as.character(l)]
@@ -165,29 +165,29 @@ pwalk(list(c('geneids', 'symbols', 'txlist'),
       })
 ## junction code
 jxgr$Class <- ifelse(jxgr$inGencode, "InGen",
-                     ifelse(jxgr$inGencodeStart & jxgr$inGencodeEnd, "ExonSkip",
-                            ifelse(jxgr$inGencodeStart | jxgr$inGencodeEnd, "AltStartEnd", "Novel")
+           ifelse(jxgr$inGencodeStart & jxgr$inGencodeEnd, "ExonSkip",
+            ifelse(jxgr$inGencodeStart | jxgr$inGencodeEnd, "AltStartEnd", "Novel")
                      )
 )
-## -- more annotations -  matching both ends first, then one at a time
-## ... too much to show.. 
+## -- more annotations performed in a similar way, also detecting "fusions" etc.
+## ... rest of the code not included here ...
 jxgr
 ```
 
 ```{r annotate novel transcript}
 ## let's define an "unkown" transcript with 3 exons
 unktx <- GRanges(seqnames=Rle('chr11', 3), 
-                 ranges=IRanges(start=c(130910018,130906625,130905953), 
-                                end=c(130910137,130906721,130906133)), strand='-')
+              ranges=IRanges(start=c(130910018,130906625,130905953), 
+                             end=c(130910137,130906721,130906133)), strand='-')
 unktx$transcript_id <- 'unkTx'
 names(unktx) <- unktx$transcript_id
 ## report any overlaps between exons
 hh <- findOverlaps(unktx, anntxgr)
 hh ## show overlaps for every exon
 
-## create a GRangesList with exons
+## create a GRangesList for this transcript
 unktxl <- split(unktx, unktx$transcript_id) 
-## findOverlaps between GRangesList objects - parent level reporting
+## findOverlaps between GRangesList objects - parent level hit reporting!
 hl <- findOverlaps(unktxl, txgrl)
 hl
 ## we can add metadata columns at parent level in GRangesList !
