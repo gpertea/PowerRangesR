@@ -10,22 +10,19 @@ library(SummarizedExperiment)
 library(Rsamtools)
 library(qs)
 library(data.table)
-##devtools::install_github("dzhang32/ggtranscript")
-##library(ggtranscript)
 ```
 
 
 ```{r fetch example files}
-options(timeout = 300)
+options(timeout = 300) # default is 60 -- genome download times out
 dlurls=list('hg38.fa.bgz' = 'EfWx9pg_ijlOqGUZZBI1FXQBpOOBuvhE-KvoZLWXQdOYSw?e=tVY4tL',
             'hg38.fa.bgz.fai' = 'EUQr4eDAJVtGv-UY2p9wOnsBcU3_Cmdk-ysIVgXyqrOxTw?e=FKEGJY',
             'hg38.fa.bgz.gzi' = 'EVWjuVzLc2hFg8ZPLO6RzscBBeqllusCA7BssBer1qvB9g?e=Zex951',
+            'rse_jx.qs' = 'ERm6QKac4F5Hkb34dleefXwBBZqbN9ixmaAX9J6LBdsB8w?e=asYSWr',
             'gencode43.nri.main.gtf.gz' = 'EcrHEjtDsI5IrxLQ74HharIBroPzsEOWqMzW_2CMMgk9yQ?e=XtQ82j'
 )
-          
 jhl='https://livejohnshopkins-my.sharepoint.com/:u:/g/personal/gpertea1_jh_edu/'
-dl='&download=1'
-datadir='data/'
+dl='&download=1'; datadir='data/'
 if (!dir.exists(datadir)) dir.create(datadir)
 for (file in names(dlurls)) {
   dlto=paste0(datadir,file)
@@ -36,39 +33,135 @@ for (file in names(dlurls)) {
     message(" file ", dlto, " already exists." )
   }
 }
-rseurls = list('rse_jx_bsp2.rda'='https://s3.us-east-2.amazonaws.com/libd-brainseq2/rse_jxn_unfiltered.Rdata',
-               'rse_gene_bsp2.rda'='https://s3.us-east-2.amazonaws.com/libd-brainseq2/rse_gene_unfiltered.Rdata')
-for (file in names(rseurls)) {
- dlto=paste0(datadir,file)
- if (!file.exists(dlto)) {
-   message("downloading: ",dlto)
-   download.file(rseurls[[file]], destfile=dlto, mode = 'wb')
-  } else {
-    message(" file ", dlto, " already exists." )
-  }
-}
 
-
-## last file has the annotation.gz 
+## last file has the Gencode annotation
 anngz=paste0(datadir, names(dlurls)[length(dlurls)])
 ```
 
 ```{r load/import}
 annqs=sub('\\.gz$','.qs',anngz)
 if (file.exists(annqs)) {
-  anndata <- qread(annqs)          ##  ~ 3 seconds
-  #load(sub('qs$','Rdata', annqs)) ## ~ 9 seconds
+  anndata <- qread(annqs)          ##  ~ 4 seconds
+  #load(sub('qs$','Rdata', annqs)) ##  ~ 9 seconds
 } else {
   anndata <- rtracklayer::import(anngz) ## ~20 seconds
-  qsave(anndata, file=annqs)            ## ~ 4 seconds
+  qsave(anndata, file=annqs)            ## ~ 5 seconds
   # save(anndata, file=sub('qs$','Rdata', annqs)) ## ~ 12 seconds
 }
-# file.edit('~/.Rprofile') ## defined oi, os, hh, etc.
-# oi(anndata)
+## file.edit('~/.Rprofile') ## defined oi, os, hh, etc.
+## oi(anndata)
+#anndata
+table(anndata$type)
 ```
 
-```{r get exonic length for transcripts, genes, number of exons}
+```{r get exonic length for transcripts and genes}
+anntxgr <- anndata[anndata$type=='transcript'] ## transcript GRanges only
+names(anntxgr) <- anntxgr$transcript_id ## set names so we can select GRanges by transcript_id
+annexgr <- anndata[anndata$type=='exon'] ## exon GRanges only
+## split: create a GRangesList with exons grouped by transcript
+txgrl <- split(annexgr, annexgr$transcript_id)
+stopifnot(identical(length(txgrl), length(anntxgr))) # sanity check
 
+
+## GRangesList::width returns an IntegerList with names as transcript_id
+## summing up exon length per all transcripts:
+txlens <- sum(width(txgrl)) # named list of exonic lengths for each transcript!
+head(txlens)
+## add new metadata column with the exonic length:
+anntxgr$Length <- txlens[anntxgr$transcript_id]
+anntxgr$numExons <- lengths(txgrl) ## or elementNROWS()
+## show ordered by decreasing number of exons
+anntxgr[order(anntxgr$numExons, decreasing = T)]
+
+## -- get intron GRanges for each transcript 
+## only multiexon transcripts have exons
+metxgrl <- txgrl[lengths(txgrl)>1] # 190689 vs 216121 total
+metxgr <- anntxgr[names(metxgrl)]
+stopifnot(identical(names(metxgr), names(metxgrl)))
+## get introns using psetdiff: subtract exon ranges from transcript ranges!
+introns <- psetdiff(metxgr, metxgrl)
+
+## -- adding Length to genes: we need to merge exons first
+##  split:  create a GRangesList with exons grouped by gene
+## reduce:  merge overlapping exons within each gene group
+mrgrl <- GenomicRanges::reduce(split(annexgr, annexgr$gene_id))
+genelens <- sum(width(mrgrl)) ## => named list of exonic lengths for each gene
+## maintain a gene GRanges
+anngene <- anndata[anndata$type=='gene']
+anngene$Length <- genelens[anngene$gene_id]
+
+
+```
+
+
+```{r write intergenic sequences}
+## open the genome file for reading (Rsamtools)
+## this also opens and loads the index, which has the chromosome lengths
+gfa <- 'data/hg38.fa.bgz'
+
+fa <- open(FaFile(gfa)) #seqinfo(fa) has the chromosome sequences info
+
+## make a GRange for the whole chromosome 7 (strand is not important)
+cgr <- GRanges(seqnames=seqnames(seqinfo(fa)), ranges = IRanges(start=1, end=seqlengths(seqinfo(fa))))
+names(cgr) <- seqnames(cgr)
+
+usgr <- subset(anndata, type=='gene')
+strand(usgr)='*' # make the gene ranges unstranded
+## get the merged ranges of overlapping genes on each chromosome
+mrgrl <- GenomicRanges::reduce(split(usgr, seqnames(usgr)))
+cgr <- cgr[names(mrgrl)] #make sure they have the same order
+
+## get intergenic GRanges by subtracting gene GRanges from chromosome GRanges
+intergr <- psetdiff(cgr, mrgrl) # getting intergenic GRanges
+
+## write the intergenic region sequences for chr7 only:
+igseq <- getSeq(fa, intergr[['chr7']])
+names(igseq) <- paste0(names(igseq), '_ig', sprintf('%04d', 1:length(igseq)))
+writeXStringSet(igseq, filepath = 'chr7_intergenics.fa', append=F)
+
+```
+
+
+```{r write transcript sequences}
+## --- write transcript sequences ----------------
+## get the exon GRanges for transcripts in the last quarter of chromosome 9 
+tx9 <- anndata[anndata$type=='transcript' & seqnames(anndata)=='chr9']
+
+# minimum coordinate for transcript in the last 1/4 of chromosome 9
+cstart <- 3*(seqlengths(seqinfo(fa)['chr9'])/4)
+tx9 <- tx9[start(tx9)>=cstart] # 3178
+
+## get just the exons for these selected transcripts
+tx9exons <- anndata[anndata$transcript_id %in% tx9$transcript_id & 
+                    anndata$type=='exon']
+
+## get a GRangesList with exons grouped by transcript_id
+txgrl <- split(tx9exons, tx9exons$transcript_id) 
+
+txchunk <- DNAStringSet() # chunk of transcript sequences to be written to FASTA
+numtx <- 0
+fappend <- F
+fasta <- 'transcripts_chr9_subset.fa'
+
+for (tid in names(txgrl)) {
+    txExonRanges <- txgrl[[tid]] # get the exons for the transcript
+    txseq <- DNAStringSet(unlist(getSeq(fa, txExonRanges)))
+    names(txseq) <- tid
+    numtx <- numtx+1
+    txchunk <- c(txchunk, txseq)
+    if (numtx %% 1100 == 0) {
+       writeXStringSet(txchunk, fasta, append=fappend)
+       cat('..', numtx)
+       fappend <- T
+       txchunk <- DNAStringSet() 
+    }
+}
+if (length(txchunk)>0) {
+   writeXStringSet(txchunk, fasta, append=fappend)
+   cat('..', numtx)
+}
+cat(" transcript sequences written.\n")
+close(fa)
 ```
 
 ```{r}
