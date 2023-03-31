@@ -70,7 +70,9 @@ head(txlens)
 ## add new metadata column with the exonic length:
 anntxgr$Length <- txlens[anntxgr$transcript_id]
 anntxgr$numExons <- lengths(txgrl) ## or elementNROWS()
-## show ordered by decreasing number of exons
+### so now anntxgr has both Length and numExons
+
+## show ordered by decreasing number of exons - titin gene!
 anntxgr[order(anntxgr$numExons, decreasing = T)]
 
 ## -- get intron GRanges for each transcript 
@@ -79,7 +81,8 @@ metxgrl <- txgrl[lengths(txgrl)>1] # 190689 vs 216121 total
 metxgr <- anntxgr[names(metxgrl)]
 stopifnot(identical(names(metxgr), names(metxgrl)))
 ## get introns using psetdiff: subtract exon ranges from transcript ranges!
-introns <- psetdiff(metxgr, metxgrl)
+introns <- psetdiff(metxgr, metxgrl) ## voila, introns for every multi-exon transcript
+##
 
 ## -- adding Length to genes: we need to merge exons first
 ##  split:  create a GRangesList with exons grouped by gene
@@ -90,8 +93,42 @@ genelens <- sum(width(mrgrl)) ## => named list of exonic lengths for each gene
 anngene <- anndata[anndata$type=='gene']
 anngene$Length <- genelens[anngene$gene_id]
 
+```
+
+```{r annotate junctions}
+rsejx <- qread(paste0('data/',names(dlurls)[4]))
+newjx <- rowRanges(rsejx)
+newjx
+## let's pretend they are not annotated yet
+mcols(newjx) <- NULL ## remove metadata
 
 ```
+
+```{r annotate novel transcript}
+## let's define an "unkown" transcript with 3 exons
+unktx <- GRanges(seqnames=Rle('chr11', 3), 
+                 ranges=IRanges(start=c(130910018,130906625,130905953), 
+                                end=c(130910137,130906721,130906133)), strand='-')
+unktx$transcript_id <- 'unkTx'
+names(unktx) <- unktx$transcript_id
+## report any overlaps between exons
+hh <- findOverlaps(unktx, anntxgr)
+hh ## show overlaps for every exon
+
+## create a GRangesList with exons
+unktxl <- split(unktx, unktx$transcript_id) 
+## findOverlaps between GRangesList objects - parent level reporting
+hl <- findOverlaps(unktxl, txgrl)
+hl
+## we can add metadata columns at parent level in GRangesList !
+## this column collects all genes of transcripts overlapping our unknown transcripts
+mcols(unktxl)$genes <- list(unique(anntxgr[names(txgrl[subjectHits(hl)])]$gene_name))
+unktxl;mcols(unktxl)
+## we can also add the "genes" annotation at exon level:
+# mcols(unktx)$genes <- mcols(unktxl)$genes
+```
+
+
 
 
 ```{r write intergenic sequences}
