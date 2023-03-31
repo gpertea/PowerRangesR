@@ -9,7 +9,9 @@ library(R.utils)
 library(SummarizedExperiment)
 library(Rsamtools)
 library(qs)
+library(purrr)
 library(data.table)
+library(stringi)
 ```
 
 
@@ -54,7 +56,7 @@ if (file.exists(annqs)) {
 table(anndata$type)
 ```
 
-```{r get exonic length for transcripts and genes}
+```{r get exonic length for transcripts, intron details}
 anntxgr <- anndata[anndata$type=='transcript'] ## transcript GRanges only
 names(anntxgr) <- anntxgr$transcript_id ## set names so we can select GRanges by transcript_id
 annexgr <- anndata[anndata$type=='exon'] ## exon GRanges only
@@ -81,9 +83,34 @@ metxgrl <- txgrl[lengths(txgrl)>1] # 190689 vs 216121 total
 metxgr <- anntxgr[names(metxgrl)]
 stopifnot(identical(names(metxgr), names(metxgrl)))
 ## get introns using psetdiff: subtract exon ranges from transcript ranges!
-introns <- psetdiff(metxgr, metxgrl) ## voila, introns for every multi-exon transcript
-##
+introns <- psetdiff(metxgr, metxgrl) ## introns from every multi-exon transcript
+introns <- unlist(introns)
+introns$transcript_id <- names(introns)
+annJxData <- NULL
+annjxqs=sub('\\.gz$','.annjx.qs',anngz)
+## we're going to use this prepared annotation file for novel junction annotation
+if (file.exists(annjxqs)) { 
+  annJxData <- qread(annjxqs)
+} else {
+  ## - data.table has better aggregation features
+  ## as we want to keep lists of genes and transcripts for each junction
+  annJxData <- as.data.table(introns)
+  jgenes <- mcols(metxgr[annJxData$transcript_id])[, c('gene_id', 'gene_name')]
+  ## add gene IDs, collapse identical junctions but keep lists of transcripts, genes sharing them
+  annJxData <- annJxData[, `:=`(gene_id=jgenes$gene_id, gene_name=jgenes$gene_name)][,
+                   .( txlist=list(sort(unique(c(transcript_id)))), glist=list(sort(unique(c(gene_id)))),
+                      gsyms=list(sort(unique(c(gene_name)))) ), by=.(seqnames, start, end, strand)][,
+                                `:=`(gcount=lengths(glist), txcount=lengths(txlist)) ]
+  annJxData <- makeGRangesFromDataFrame(annJxData, keep.extra.columns = T)
+  names(annJxData) <-  paste(seqnames(annJxData), ranges(annJxData), strand(annJxData), sep=':')
+  qsave(annJxData, file=annjxqs)
+}
+annJxData
 
+```
+
+
+```{r get exonic length of genes}
 ## -- adding Length to genes: we need to merge exons first
 ##  split:  create a GRangesList with exons grouped by gene
 ## reduce:  merge overlapping exons within each gene group
@@ -95,13 +122,56 @@ anngene$Length <- genelens[anngene$gene_id]
 
 ```
 
-```{r annotate junctions}
+```{r load junctions}
 rsejx <- qread(paste0('data/',names(dlurls)[4]))
-newjx <- rowRanges(rsejx)
-newjx
+jxgr <- rowRanges(rsejx)
 ## let's pretend they are not annotated yet
-mcols(newjx) <- NULL ## remove metadata
+mcols(jxgr) <- NULL ## remove metadata
+names(jxgr) <- NULL ## remove old names
+## assign unique names from genomic location
+names(jxgr) <- stri_join(seqnames(jxgr),ranges(jxgr), strand(jxgr), sep=':')
+jxgr
+```
 
+
+```{r annotate junctions}
+## annotate junctions vs loaded reference annotation annJxData
+
+inGencode <- countOverlaps(jxgr, annJxData, type = "equal") > 0
+jxgr$inGencode <- inGencode
+message(length(inGencode[inGencode]), " junctions found matching annotation.")
+#if (length(inGencode)<100000) {
+#  message("WARNING: low number of Gencode-matching junctions, check for coordinate/strand issues")
+#}
+
+jxgr$inGencodeStart <- countOverlaps(jxgr, annJxData, type = "start") > 0
+jxgr$inGencodeEnd <- countOverlaps(jxgr, annJxData, type = "end") > 0
+
+oo <- findOverlaps(jxgr, annJxData, type = "equal")
+
+# list of Gencode IDs fully matching junction
+pwalk(list(c('geneids', 'symbols', 'txlist'),
+           c('glist','gsyms','txlist'),
+           c('gencodeGeneID','Symbol','gencodeTx')),
+      function(a, b, c) {
+        dt <- data.table(l=vector('list', length(jxgr)), s=as.character(NA))
+        dt[queryHits(oo), l:=mcols(annJxData[subjectHits(oo)])[, b] ]
+        dt[lengths(l)>1,  s:=sapply(l, paste, collapse=',')]
+        dt[lengths(l)==1, s:=as.character(l)]
+        mcols(jxgr)[, c] <<- dt[,2]
+        if (b=='txlist') {
+          jxgr$numTx <<- lengths(dt$l)
+        }
+      })
+## junction code
+jxgr$Class <- ifelse(jxgr$inGencode, "InGen",
+                     ifelse(jxgr$inGencodeStart & jxgr$inGencodeEnd, "ExonSkip",
+                            ifelse(jxgr$inGencodeStart | jxgr$inGencodeEnd, "AltStartEnd", "Novel")
+                     )
+)
+## -- more annotations -  matching both ends first, then one at a time
+## ... too much to show.. 
+jxgr
 ```
 
 ```{r annotate novel transcript}
@@ -127,9 +197,6 @@ unktxl;mcols(unktxl)
 ## we can also add the "genes" annotation at exon level:
 # mcols(unktx)$genes <- mcols(unktxl)$genes
 ```
-
-
-
 
 ```{r write intergenic sequences}
 ## open the genome file for reading (Rsamtools)
